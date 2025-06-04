@@ -147,34 +147,109 @@ class HTMLParser:
         return results
     
     def _extract_google_results(self, html):
-        """Extract search results from Google (basic implementation)"""
+        """Extract search results from Google"""
         results = []
         
-        # Google result pattern (simplified)
-        result_pattern = r'<div[^>]*class="[^"]*g[^"]*"[^>]*>(.*?)</div>'
-        result_matches = re.findall(result_pattern, html, re.DOTALL | re.IGNORECASE)
+        # Google result patterns (multiple patterns for better coverage)
+        patterns = [
+            # Main result pattern
+            r'<div[^>]*data-ved[^>]*>.*?<h3[^>]*>.*?<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>.*?</h3>.*?(?:<div[^>]*class="[^"]*VwiC3b[^"]*"[^>]*>(.*?)</div>)?',
+            # Alternative pattern
+            r'<div[^>]*class="[^"]*g[^"]*"[^>]*>.*?<h3[^>]*>.*?<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>.*?</h3>.*?(?:<span[^>]*class="[^"]*st[^"]*"[^>]*>(.*?)</span>)?',
+            # Simple link pattern
+            r'<a[^>]*href="(/url\?q=([^&]*)[^"]*)"[^>]*><h3[^>]*>(.*?)</h3></a>',
+            # Direct URL pattern
+            r'<h3[^>]*class="[^"]*"[^>]*><a[^>]*href="([^"]*)"[^>]*>(.*?)</a></h3>'
+        ]
         
-        for match in result_matches:
-            title = ""
-            url = ""
-            description = ""
+        for pattern in patterns:
+            matches = re.findall(pattern, html, re.DOTALL | re.IGNORECASE)
             
-            # Extract title and URL
-            title_match = re.search(r'<h3[^>]*>.*?<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>', match, re.DOTALL | re.IGNORECASE)
-            if title_match:
-                url = title_match.group(1)
-                title = self.extract_text(title_match.group(2))
-            
-            # Extract description
-            desc_match = re.search(r'<span[^>]*class="[^"]*st[^"]*"[^>]*>(.*?)</span>', match, re.DOTALL | re.IGNORECASE)
-            if desc_match:
-                description = self.extract_text(desc_match.group(1))
-            
-            if title and url:
-                results.append({
-                    'title': title,
-                    'url': url,
-                    'description': description
-                })
+            for match in matches:
+                if len(match) >= 2:
+                    url = match[0] if len(match) >= 1 else ""
+                    title = match[1] if len(match) >= 2 else ""
+                    description = match[2] if len(match) >= 3 else ""
+                    
+                    # Handle Google's URL encoding
+                    if url.startswith('/url?q='):
+                        # Extract actual URL from Google's redirect
+                        import urllib.parse
+                        try:
+                            parsed = urllib.parse.parse_qs(url[7:])  # Remove '/url?q='
+                            if 'q' in parsed:
+                                url = parsed['q'][0]
+                        except:
+                            continue
+                    
+                    # Clean up the data
+                    if url and title:
+                        title_clean = self.extract_text(title).strip()
+                        desc_clean = self.extract_text(description).strip() if description else ""
+                        
+                        # Filter out Google's own links and ads
+                        if (title_clean and url.startswith('http') and 
+                            'google.com' not in url and 
+                            'googleusercontent.com' not in url and
+                            not any(skip in url.lower() for skip in ['ads', 'sponsored']) and
+                            len(title_clean) > 5):
+                            
+                            results.append({
+                                'title': title_clean,
+                                'url': url,
+                                'description': desc_clean
+                            })
         
-        return results
+        # If main patterns didn't work, try fallback extraction
+        if not results:
+            results = self._extract_google_fallback(html)
+        
+        # Remove duplicates
+        seen_urls = set()
+        unique_results = []
+        for result in results:
+            if result['url'] not in seen_urls:
+                seen_urls.add(result['url'])
+                unique_results.append(result)
+        
+        return unique_results
+    
+    def _extract_google_fallback(self, html):
+        """Fallback method for Google results"""
+        results = []
+        
+        # Look for any links that might be search results
+        link_patterns = [
+            r'<a[^>]*href="(https?://[^"]*)"[^>]*>([^<]+)</a>',
+            r'href="(/url\?q=([^&"]*)[^"]*)"[^>]*>([^<]+)',
+        ]
+        
+        for pattern in link_patterns:
+            matches = re.findall(pattern, html, re.IGNORECASE)
+            
+            for match in matches:
+                if len(match) >= 2:
+                    if len(match) == 3 and match[0].startswith('/url'):
+                        # Google redirect URL
+                        url = match[1]
+                        title = match[2]
+                    else:
+                        # Direct URL
+                        url = match[0]
+                        title = match[1]
+                    
+                    # Clean and validate
+                    title_clean = self.extract_text(title).strip()
+                    
+                    if (title_clean and url.startswith('http') and 
+                        len(title_clean) > 10 and
+                        not any(skip in url.lower() for skip in 
+                               ['google.com', 'youtube.com', 'facebook.com', 'twitter.com', 'ads'])):
+                        
+                        results.append({
+                            'title': title_clean,
+                            'url': url,
+                            'description': ""
+                        })
+        
+        return results[:10]

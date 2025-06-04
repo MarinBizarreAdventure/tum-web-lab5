@@ -13,13 +13,17 @@ class SearchEngine:
         
         # Search engines with their URL patterns
         self.engines = {
-            'duckduckgo': {
-                'url': 'https://duckduckgo.com/html/?q={}',
-                'name': 'DuckDuckGo'
+            'google': {
+                'url': 'https://www.google.com/search?q={}',
+                'name': 'Google'
             },
             'bing': {
                 'url': 'https://www.bing.com/search?q={}',
                 'name': 'Bing'
+            },
+            'duckduckgo': {
+                'url': 'https://duckduckgo.com/html/?q={}',
+                'name': 'DuckDuckGo'
             },
             'startpage': {
                 'url': 'https://www.startpage.com/sp/search?query={}',
@@ -27,7 +31,7 @@ class SearchEngine:
             }
         }
         
-        self.default_engine = 'duckduckgo'
+        self.default_engine = 'google'
     
     def search(self, query, engine=None):
         """Search for a query using the specified search engine"""
@@ -82,7 +86,12 @@ class SearchEngine:
         """Make HTTP request to search engine with proper headers"""
         # Temporarily override user agent for search engines
         original_ua = self.http_client.user_agent
-        self.http_client.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        
+        # Use a more realistic user agent for Google
+        if 'google.com' in url:
+            self.http_client.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        else:
+            self.http_client.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         
         try:
             # Get raw HTML response instead of processed text
@@ -93,9 +102,6 @@ class SearchEngine:
     
     def _get_raw_html(self, url):
         """Get raw HTML response for parsing"""
-        # We need to modify the HTTP client to return raw HTML for search parsing
-        # This is a simplified version - in practice, you might need to modify http_client
-        
         from urllib.parse import urlparse
         import socket
         import ssl
@@ -122,11 +128,24 @@ class SearchEngine:
             # Build request with search engine headers
             request = f"GET {path} HTTP/1.1\r\n"
             request += f"Host: {host}\r\n"
-            request += "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36\r\n"
-            request += "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
-            request += "Accept-Language: en-US,en;q=0.5\r\n"
+            
+            # Use appropriate User-Agent based on search engine
+            if 'google.com' in url:
+                request += "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n"
+            else:
+                request += "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36\r\n"
+            
+            request += "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8\r\n"
+            request += "Accept-Language: en-US,en;q=0.9\r\n"
             request += "Accept-Encoding: identity\r\n"
+            request += "Cache-Control: no-cache\r\n"
+            request += "Pragma: no-cache\r\n"
             request += "Connection: close\r\n"
+            
+            # Add cookies for Google (helps with blocking)
+            if 'google.com' in url:
+                request += "Cookie: CONSENT=YES+cb.20220419-17-p0.en+FX+{};\r\n".format(int(time.time()))
+            
             request += "\r\n"
             
             # Send request
@@ -146,11 +165,26 @@ class SearchEngine:
             # Extract body from HTTP response
             response_str = response_data.decode('utf-8', errors='ignore')
             if '\r\n\r\n' in response_str:
-                _, body = response_str.split('\r\n\r\n', 1)
+                headers, body = response_str.split('\r\n\r\n', 1)
+                
+                # Check for redirects or errors
+                if '301' in headers or '302' in headers:
+                    # Handle redirects for search engines
+                    import re
+                    location_match = re.search(r'Location: ([^\r\n]+)', headers, re.IGNORECASE)
+                    if location_match:
+                        redirect_url = location_match.group(1).strip()
+                        if redirect_url.startswith('/'):
+                            redirect_url = f"https://{host}{redirect_url}"
+                        print(f"Following redirect to: {redirect_url}")
+                        return self._get_raw_html(redirect_url)
+                
                 return body
             
             return response_str
             
+        except Exception as e:
+            raise Exception(f"Failed to fetch search results: {e}")
         finally:
             sock.close()
     
